@@ -1,0 +1,323 @@
+{
+  "name": "🎓 JobMatch AI — Student Job Finder (Full Stack)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "student-job-finder",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-main",
+      "name": "Webhook - Job Search",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-400, 0],
+      "webhookId": "317ba303-c17d-4ef3-b9b0-d79e5b7b3555"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "career-advisor",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-advisor",
+      "name": "Webhook - Career Advisor",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-400, 300],
+      "webhookId": "career-advisor-webhook-id"
+    },
+    {
+      "parameters": {
+        "jsCode": "const incoming = $input.first().json;\nconst body = incoming.body || incoming;\n\nconst required = ['study_field', 'location'];\nconst missing = required.filter(f => !body[f]);\nif (missing.length > 0) {\n  return [{ json: { ok: false, error: `Champs manquants: ${missing.join(', ')}`, missing, timestamp: new Date().toISOString() } }];\n}\n\nconst locationParts = (body.location || '').split(',');\nconst city = (locationParts[0] || body.location).trim();\nconst country = (locationParts[1] || 'Tunisie').trim();\n\nreturn [{ json: {\n  ok: true,\n  schedule: body.schedule || 'Non spécifié',\n  studyField: body.study_field,\n  location: body.location,\n  city, country,\n  skills: body.skills || 'Non spécifié',\n  availabilityHours: body.availability_hours_per_week ?? 20,\n  preferredType: body.preferred_job_type || 'les deux',\n  language: body.language || 'fr',\n  budget_needed: body.monthly_budget_needed ?? 600,\n  ai_note: body.ai_note || '',\n  timestamp: new Date().toISOString()\n} }];"
+      },
+      "id": "validate-input",
+      "name": "Validate & Prepare Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-160, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "leftValue": "={{ $json.ok }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-valid",
+      "name": "IF - Valid Input",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [80, 0]
+    },
+    {
+      "parameters": {
+        "url": "https://api.adzuna.com/v1/api/jobs/fr/search/1",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "app_id",          "value": "c68f92b5" },
+            { "name": "app_key",         "value": "933076b03bb977f57f41299f57fab4cb" },
+            { "name": "results_per_page","value": "20" },
+            { "name": "what",            "value": "={{ $json.studyField }}" },
+            { "name": "where",           "value": "Paris" },
+            { "name": "part_time",       "value": "1" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "adzuna-api",
+      "name": "Adzuna Job Search API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [320, -120]
+    },
+    {
+      "parameters": {
+        "url": "https://remotive.com/api/remote-jobs",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "search", "value": "={{ $('Validate & Prepare Input').first().json.studyField }}" },
+            { "name": "limit",  "value": "15" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "remotive-api",
+      "name": "Remotive Remote Jobs API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [320, 80]
+    },
+    {
+      "parameters": {},
+      "id": "merge-apis",
+      "name": "Wait for Both APIs",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [580, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const studentData = $('Validate & Prepare Input').first().json;\nconst payloads = $input.all().map(i => i.json);\nconst nowISO = new Date().toISOString();\n\nconst stripHtml = (s='') => String(s).replace(/<[^>]*>/g,' ').replace(/\\s+/g,' ').trim();\nconst normalKey = (s='') => stripHtml(s).toLowerCase().trim();\nconst hashKey  = (t,c,l) => `${normalKey(t)}|${normalKey(c)}|${normalKey(l)}`;\n\nfunction hints(text='') {\n  const t = normalKey(text);\n  const h = [];\n  if (/part.time|temps partiel/.test(t)) h.push('part-time');\n  if (/flexible|flexibilit/.test(t)) h.push('flexible');\n  if (/remote|télétravail|distance/.test(t)) h.push('remote');\n  if (/evening|soir|night|nuit/.test(t)) h.push('evening');\n  if (/weekend|samedi|dimanche/.test(t)) h.push('weekend');\n  return h;\n}\n\nlet jobs = [];\n\nfor (const data of payloads) {\n  if (data?.results && Array.isArray(data.results)) {\n    for (const j of data.results) {\n      const desc = stripHtml(j.description || '');\n      jobs.push({\n        id: String(j.id || Math.random().toString(36).slice(2)),\n        title: j.title || 'Titre non disponible',\n        company: j.company?.display_name || 'Non mentionné',\n        location: j.location?.display_name || studentData.location,\n        job_type: 'Présentiel/Hybride',\n        salary_display: (j.salary_min || j.salary_max) ? `${j.salary_min ?? ''} - ${j.salary_max ?? ''} EUR` : 'Non spécifié',\n        description: desc.substring(0, 400),\n        apply_url: j.redirect_url || '#',\n        source: 'Adzuna',\n        posted_date: j.created || nowISO,\n        hour_hints: hints(desc)\n      });\n    }\n  }\n  if (data?.jobs && Array.isArray(data.jobs)) {\n    for (const j of data.jobs) {\n      const desc = stripHtml(j.description || '');\n      jobs.push({\n        id: String(j.id || Math.random().toString(36).slice(2)),\n        title: j.title || 'Titre non disponible',\n        company: j.company_name || 'Non mentionné',\n        location: '🌍 Remote (Travail à distance)',\n        job_type: 'Remote',\n        salary_display: j.salary || 'Non spécifié',\n        description: desc.substring(0, 400),\n        apply_url: j.url || '#',\n        source: 'Remotive',\n        posted_date: j.publication_date || nowISO,\n        hour_hints: hints(desc),\n        tags: j.tags || []\n      });\n    }\n  }\n}\n\nconst seen = new Set();\nconst deduped = jobs.filter(j => {\n  const k = hashKey(j.title, j.company, j.location);\n  if (seen.has(k)) return false;\n  seen.add(k);\n  return true;\n});\n\nconst prefType = (studentData.preferredType || 'les deux').toLowerCase();\nlet filtered = deduped;\nif (prefType === 'remote') {\n  filtered = deduped.filter(j => j.job_type.toLowerCase().includes('remote'));\n} else if (prefType === 'présentiel' || prefType === 'presentiel') {\n  filtered = deduped.filter(j => !j.job_type.toLowerCase().includes('remote'));\n}\n\nreturn [{ json: { jobs: filtered, studentData, totalFound: filtered.length } }];"
+      },
+      "id": "merge-normalize",
+      "name": "Merge & Normalize Jobs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\nconst sd = d.studentData;\n\nconst systemMsg = 'Tu es un expert en emploi étudiant. Réponds UNIQUEMENT en JSON valide sans markdown ni backticks. Sois précis et bienveillant.';\n\nconst userMsg = `Profil étudiant:\n- Domaine: ${sd.studyField}\n- Lieu: ${sd.location}\n- Emploi du temps: ${sd.schedule}\n- Compétences: ${sd.skills}\n- Disponibilité: ${sd.availabilityHours}h/semaine\n- Budget cible: ${sd.budget_needed} TND/mois\n- Type souhaité: ${sd.preferredType}\n- Note personnelle: ${sd.ai_note || 'aucune'}\n\nNombre d'offres trouvées: ${d.totalFound}\nDonnées offres: ${JSON.stringify(d.jobs.slice(0,25))}\n\nRetourne ce JSON valide sans markdown:\n{\n  \"filtered_jobs\": [\n    {\n      \"rank\": 1,\n      \"title\": \"titre exact\",\n      \"company\": \"entreprise\",\n      \"location\": \"ville\",\n      \"job_type\": \"Remote|Présentiel|Hybride\",\n      \"working_hours\": \"horaires ou Non spécifié\",\n      \"hours_per_week\": \"20h\",\n      \"salary\": \"montant ou Non spécifié\",\n      \"apply_url\": \"url exacte de l'offre\",\n      \"source\": \"plateforme source\",\n      \"compatibility_score\": 85,\n      \"why_compatible\": \"raison courte max 15 mots\",\n      \"required_skills\": [\"skill1\", \"skill2\"],\n      \"tips\": \"conseil personnalisé max 20 mots\"\n    }\n  ],\n  \"total_results\": 5,\n  \"summary\": \"résumé des résultats en 2 phrases max\",\n  \"additional_platforms\": [\n    {\"name\": \"LinkedIn Jobs\", \"url\": \"https://www.linkedin.com/jobs/\", \"description\": \"Jobs étudiant et stages\"},\n    {\"name\": \"Tanitjobs.com\", \"url\": \"https://www.tanitjobs.com\", \"description\": \"Offres en Tunisie\"},\n    {\"name\": \"OptionCarrière\", \"url\": \"https://www.optioncarriere.tn\", \"description\": \"Agrégateur Tunisie\"},\n    {\"name\": \"Upwork\", \"url\": \"https://www.upwork.com\", \"description\": \"Freelance international\"},\n    {\"name\": \"Remotive.com\", \"url\": \"https://www.remotive.com\", \"description\": \"Jobs remote uniquement\"}\n  ]\n}`;\n\nconst groqPayload = {\n  model: 'llama-3.3-70b-versatile',\n  max_tokens: 4000,\n  temperature: 0.2,\n  messages: [\n    { role: 'system', content: systemMsg },\n    { role: 'user',   content: userMsg }\n  ]\n};\n\nreturn [{ json: { groqPayload, studentData: sd } }];"
+      },
+      "id": "build-groq-request",
+      "name": "Build Groq Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1020, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer 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" },
+            { "name": "Content-Type",   "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json.groqPayload) }}",
+        "options": {}
+      },
+      "id": "groq-ai",
+      "name": "Groq AI - Filter & Analyze Jobs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1240, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const ai = $input.first().json;\nconst studentData = $('Validate & Prepare Input').first().json;\n\nconst raw = ai?.choices?.[0]?.message?.content || '';\n\nlet parsed = null;\ntry {\n  const clean = String(raw).replace(/```json\\s*/gi,'').replace(/```\\s*/g,'').trim();\n  parsed = clean ? JSON.parse(clean) : null;\n} catch(e) {\n  parsed = null;\n}\n\nif (!parsed || typeof parsed !== 'object') {\n  parsed = { filtered_jobs: [], total_results: 0, summary: 'Analyse IA temporairement indisponible.', additional_platforms: [] };\n}\n\nconst offers = Array.isArray(parsed.filtered_jobs) ? parsed.filtered_jobs : [];\n\nconst finalOutput = {\n  success: true,\n  generated_at: new Date().toISOString(),\n  ai_model: 'Groq llama-3.3-70b-versatile',\n  student_profile: {\n    study_field: studentData.studyField,\n    location: studentData.location,\n    schedule: studentData.schedule,\n    skills: studentData.skills,\n    availability: `${studentData.availabilityHours} heures/semaine`,\n    preferred_type: studentData.preferredType,\n    budget_needed: `${studentData.budget_needed} TND/mois`\n  },\n  results: {\n    total_jobs_found: parsed.total_results || offers.length,\n    summary: parsed.summary || '',\n    job_offers: offers.map((job, idx) => ({\n      rank: job.rank ?? (idx + 1),\n      title: job.title,\n      company: job.company,\n      location: job.location,\n      job_type: job.job_type,\n      working_hours: {\n        schedule: job.working_hours || 'Non spécifié',\n        hours_per_week: job.hours_per_week || 'Non spécifié'\n      },\n      compensation: {\n        amount: job.salary || 'Non spécifié',\n        period: 'par mois'\n      },\n      apply: {\n        url: job.apply_url,\n        source_platform: job.source\n      },\n      compatibility: {\n        score: job.compatibility_score ?? null,\n        reason: job.why_compatible || ''\n      },\n      required_skills: job.required_skills || [],\n      personalized_tip: job.tips || ''\n    })),\n    additional_platforms: parsed.additional_platforms?.length ? parsed.additional_platforms : [\n      { name: 'LinkedIn Jobs',     url: 'https://www.linkedin.com/jobs/', description: 'Jobs étudiant, stages, part-time' },\n      { name: 'Tanitjobs.com',     url: 'https://www.tanitjobs.com',      description: 'Offres en Tunisie' },\n      { name: 'OptionCarrière',    url: 'https://www.optioncarriere.tn',  description: 'Agrégateur offres Tunisie' },\n      { name: 'Upwork',            url: 'https://www.upwork.com',         description: 'Freelance international remote' },\n      { name: 'Remotive.com',      url: 'https://www.remotive.com',       description: 'Jobs remote uniquement' }\n    ]\n  }\n};\n\nreturn [{ json: finalOutput }];"
+      },
+      "id": "build-final-output",
+      "name": "Build Final JSON Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1460, 0]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($input.first().json) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              { "name": "Content-Type",                "value": "application/json" },
+              { "name": "Access-Control-Allow-Origin", "value": "*" },
+              { "name": "Access-Control-Allow-Headers","value": "Content-Type" }
+            ]
+          }
+        }
+      },
+      "id": "respond-success",
+      "name": "Respond with JSON",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1680, 0]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, error: $json.error || 'Erreur validation', missing: $json.missing || [], timestamp: new Date().toISOString() }) }}",
+        "options": {
+          "responseCode": 400,
+          "responseHeaders": {
+            "entries": [
+              { "name": "Access-Control-Allow-Origin", "value": "*" }
+            ]
+          }
+        }
+      },
+      "id": "respond-error",
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [320, 280]
+    },
+    {
+      "parameters": {
+        "jsCode": "// CAREER ADVISOR ENDPOINT\nconst body = $input.first().json.body || $input.first().json;\n\nconst message = body.message || '';\nconst profile = body.profile || {};\nconst jobsFound = body.jobs_found || 0;\n\nconst systemMsg = `Tu es un conseiller carrière expert pour étudiants tunisiens. \nTu connais le marché du travail local et international.\nTu donnes des conseils concrets, bienveillants et actionnables.\nRéponds en français de manière directe et structurée.\nMax 200 mots par réponse.`;\n\nconst userMsg = `Profil étudiant: domaine=${profile.study_field||'Non spécifié'}, lieu=${profile.location||'Tunisie'}, compétences=${profile.skills||'Non spécifié'}\nOffres trouvées: ${jobsFound}\n\nQuestion: ${message}`;\n\nconst groqPayload = {\n  model: 'llama-3.3-70b-versatile',\n  max_tokens: 500,\n  temperature: 0.7,\n  messages: [\n    { role: 'system', content: systemMsg },\n    { role: 'user',   content: userMsg }\n  ]\n};\n\nreturn [{ json: { groqPayload } }];"
+      },
+      "id": "build-advisor-request",
+      "name": "Build Career Advisor Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-100, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer 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" },
+            { "name": "Content-Type",   "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json.groqPayload) }}",
+        "options": {}
+      },
+      "id": "groq-advisor",
+      "name": "Groq AI - Career Advisor",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [140, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const ai = $input.first().json;\nconst reply = ai?.choices?.[0]?.message?.content || 'Je suis là pour t\\'aider avec ta carrière !';\n\nreturn [{ json: {\n  success: true,\n  reply: reply,\n  timestamp: new Date().toISOString()\n} }];"
+      },
+      "id": "format-advisor-reply",
+      "name": "Format Advisor Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [380, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($input.first().json) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              { "name": "Content-Type",                "value": "application/json" },
+              { "name": "Access-Control-Allow-Origin", "value": "*" }
+            ]
+          }
+        }
+      },
+      "id": "respond-advisor",
+      "name": "Respond Career Advisor",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [620, 300]
+    }
+  ],
+  "connections": {
+    "Webhook - Job Search": {
+      "main": [[{ "node": "Validate & Prepare Input", "type": "main", "index": 0 }]]
+    },
+    "Validate & Prepare Input": {
+      "main": [[{ "node": "IF - Valid Input", "type": "main", "index": 0 }]]
+    },
+    "IF - Valid Input": {
+      "main": [
+        [
+          { "node": "Adzuna Job Search API",    "type": "main", "index": 0 },
+          { "node": "Remotive Remote Jobs API", "type": "main", "index": 0 }
+        ],
+        [{ "node": "Error Response", "type": "main", "index": 0 }]
+      ]
+    },
+    "Adzuna Job Search API": {
+      "main": [[{ "node": "Wait for Both APIs", "type": "main", "index": 0 }]]
+    },
+    "Remotive Remote Jobs API": {
+      "main": [[{ "node": "Wait for Both APIs", "type": "main", "index": 1 }]]
+    },
+    "Wait for Both APIs": {
+      "main": [[{ "node": "Merge & Normalize Jobs", "type": "main", "index": 0 }]]
+    },
+    "Merge & Normalize Jobs": {
+      "main": [[{ "node": "Build Groq Request", "type": "main", "index": 0 }]]
+    },
+    "Build Groq Request": {
+      "main": [[{ "node": "Groq AI - Filter & Analyze Jobs", "type": "main", "index": 0 }]]
+    },
+    "Groq AI - Filter & Analyze Jobs": {
+      "main": [[{ "node": "Build Final JSON Output", "type": "main", "index": 0 }]]
+    },
+    "Build Final JSON Output": {
+      "main": [[{ "node": "Respond with JSON", "type": "main", "index": 0 }]]
+    },
+    "Webhook - Career Advisor": {
+      "main": [[{ "node": "Build Career Advisor Request", "type": "main", "index": 0 }]]
+    },
+    "Build Career Advisor Request": {
+      "main": [[{ "node": "Groq AI - Career Advisor", "type": "main", "index": 0 }]]
+    },
+    "Groq AI - Career Advisor": {
+      "main": [[{ "node": "Format Advisor Reply", "type": "main", "index": 0 }]]
+    },
+    "Format Advisor Reply": {
+      "main": [[{ "node": "Respond Career Advisor", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "instanceId": "jobmatch-ai-v2"
+  },
+  "id": "jobmatch-ai-workflow-v2",
+  "tags": ["student", "jobs", "ai"]
+}
